@@ -12,6 +12,7 @@ const app = express();
 const server = http.createServer(app);
 
 app.use(cors());
+
 app.use(express.json());
 
 // Serve static files từ Vite build
