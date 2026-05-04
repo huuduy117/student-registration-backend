@@ -1,7 +1,6 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
-const path = require("path");
 const http = require("http");
 const { connectMongoDB } = require("./config/db");
 
@@ -25,9 +24,6 @@ const server = http.createServer(app);
 
 app.use(cors());
 app.use(express.json());
-
-// Serve static files from Vite build
-app.use(express.static(path.resolve(__dirname, "../frontend/dist")));
 
 // ─── API Routes ───────────────────────────────────────────────────────────────
 app.use("/api/users", userRoutes);
@@ -56,14 +52,9 @@ async function startServer() {
       wsController.handleUpgrade(request, socket, head);
     });
 
-    // React Router fallback — must be after all API routes
-    app.get("*", (req, res) => {
-      res.sendFile(path.resolve(__dirname, "../frontend/dist/index.html"));
-    });
-
     const port = process.env.PORT || 5000;
     server.listen(port, () => {
-      console.log(`Server running at: http://localhost:${port}`);
+      console.log(`Server running on port ${port}`);
     });
   } catch (err) {
     console.error("Failed to start server:", err);
