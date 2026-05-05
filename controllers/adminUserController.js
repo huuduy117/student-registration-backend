@@ -1,4 +1,5 @@
 const { supabase } = require("../config/db");
+const bcrypt = require("bcrypt");
 
 // ─── User Management ─────────────────────────────────────────────────────────
 
@@ -40,10 +41,18 @@ async function updateUser(userId, userData) {
   if (!userData || typeof userData !== "object") {
     throw { success: false, message: "Missing or invalid userData" };
   }
-  if (Object.keys(userData).length > 0) {
+
+  const updateData = { ...userData };
+
+  if (updateData.matKhau) {
+    updateData.password = await bcrypt.hash(updateData.matKhau, 10);
+    delete updateData.matKhau;
+  }
+
+  if (Object.keys(updateData).length > 0) {
     const { error } = await supabase
       .from("users")
-      .update(userData)
+      .update(updateData)
       .eq("id", userId);
     if (error) throw { success: false, message: "Error updating user", error };
   }
