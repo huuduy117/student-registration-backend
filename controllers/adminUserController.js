@@ -1,13 +1,52 @@
 const { supabase } = require("../config/db");
 const bcrypt = require("bcrypt");
 
+// ─── Helpers ────────────────────────────────────────────────────────────────────
+
+const VI_TO_EN_ROLE = {
+  SinhVien: "Student",
+  GiangVien: "Teacher",
+  Student: "Student",
+  Teacher: "Teacher",
+  Admin: "Admin",
+};
+
+/**
+ * Maps Vietnamese field names from the admin UI to Supabase column names.
+ * Handles creation and update payloads uniformly.
+ */
+function mapUserDataToDb(data) {
+  const dbData = {};
+  if (data.maNguoiDung) dbData.id = data.maNguoiDung;
+  if (data.tenDangNhap) dbData.username = data.tenDangNhap;
+  if (data.matKhau) dbData.password = data.matKhau;
+  if (data.loaiNguoiDung) dbData.role = VI_TO_EN_ROLE[data.loaiNguoiDung] || data.loaiNguoiDung;
+  // Also passthrough any direct English keys
+  if (data.id && !dbData.id) dbData.id = data.id;
+  if (data.username && !dbData.username) dbData.username = data.username;
+  if (data.password && !dbData.password) dbData.password = data.password;
+  if (data.role && !dbData.role) dbData.role = data.role;
+  return dbData;
+}
+
 // ─── User Management ─────────────────────────────────────────────────────────
 
 async function createUserWithDetail(userData) {
   if (!userData || typeof userData !== "object") {
     throw { success: false, message: "Missing or invalid userData" };
   }
-  const { error } = await supabase.from("users").insert(userData);
+
+  const dbData = mapUserDataToDb(userData);
+
+  if (!dbData.id || !dbData.username) {
+    throw { success: false, message: "Missing required fields: id (maNguoiDung) and username (tenDangNhap)" };
+  }
+
+  if (dbData.password) {
+    dbData.password = await bcrypt.hash(dbData.password, 10);
+  }
+
+  const { error } = await supabase.from("users").insert(dbData);
   if (error) {
     if (error.code === "23505") {
       throw { success: false, message: "User ID already exists", error };
@@ -42,17 +81,20 @@ async function updateUser(userId, userData) {
     throw { success: false, message: "Missing or invalid userData" };
   }
 
-  const updateData = { ...userData };
+  const dbData = mapUserDataToDb(userData);
 
-  if (updateData.matKhau) {
-    updateData.password = await bcrypt.hash(updateData.matKhau, 10);
-    delete updateData.matKhau;
+  // Remove id from update payload — it's the WHERE clause key, not a column to UPDATE
+  delete dbData.id;
+
+  // Hash password if present
+  if (dbData.password) {
+    dbData.password = await bcrypt.hash(dbData.password, 10);
   }
 
-  if (Object.keys(updateData).length > 0) {
+  if (Object.keys(dbData).length > 0) {
     const { error } = await supabase
       .from("users")
-      .update(updateData)
+      .update(dbData)
       .eq("id", userId);
     if (error) throw { success: false, message: "Error updating user", error };
   }
