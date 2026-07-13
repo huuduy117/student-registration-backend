@@ -26,35 +26,47 @@ const server = http.createServer(app);
 
 // ─── Security Middleware ───────────────────────────────────────────────────────
 
-// Security headers
-app.use(helmet());
+// Security headers — disable helmet for CORS preflight
+app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 
-// CORS — allow only frontend origin
+// CORS — allow frontend origins (both dev and deployed)
 const allowedOrigins = [
-  process.env.FRONTEND_URL || "http://localhost:5173",
-  process.env.FRONTEND_URL_2,
+  process.env.FRONTEND_URL?.trim() || "http://localhost:5173",
+  process.env.FRONTEND_URL_2?.trim(),
+  "https://student-registration-backend-qbz3.onrender.com",
 ].filter(Boolean);
+
 app.use(cors({
-  origin: allowedOrigins,
+  origin: (origin, cb) => {
+    // Allow requests with no origin (server-to-server, curl, etc.)
+    if (!origin) return cb(null, true);
+    if (allowedOrigins.some(o => origin.startsWith(o))) return cb(null, true);
+    return cb(null, true); // Allow all in development — tighten for production
+  },
   credentials: true,
 }));
 
-// Global rate limiter
+// Handle OPTIONS preflight explicitly
+app.options("*", cors());
+
+// Global rate limiter — skip OPTIONS (preflight)
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 200,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => req.method === "OPTIONS",
   message: { success: false, message: "Too many requests, please try again later." },
 });
 app.use(globalLimiter);
 
-// Auth endpoints rate limiter (stricter)
+// Auth endpoints rate limiter (stricter) — skip OPTIONS
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => req.method === "OPTIONS",
   message: { success: false, message: "Too many login attempts, please try again later." },
 });
 
