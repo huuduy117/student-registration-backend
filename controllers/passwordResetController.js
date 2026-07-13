@@ -7,10 +7,14 @@ const { sendSuccess, sendError } = require("../utils/response");
 const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
-    user: process.env.EMAIL_USER || "chungluong4423@gmail.com",
-    pass: process.env.EMAIL_PASSWORD || "suxi pwla envq wybv",
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASSWORD,
   },
 });
+
+if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
+  console.warn("EMAIL_USER and EMAIL_PASSWORD must be set in environment for password reset to work");
+}
 
 // ─── Request Reset ────────────────────────────────────────────────────────────
 
@@ -61,7 +65,7 @@ exports.requestReset = async (req, res) => {
     const expirationMinutes = 60;
 
     const mailOptions = {
-      from: process.env.EMAIL_USER || "your-email@gmail.com",
+      from: process.env.EMAIL_USER,
       to: email,
       subject: "Password Reset",
       html: `

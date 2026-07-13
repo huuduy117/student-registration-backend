@@ -1,6 +1,8 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 const http = require("http");
 const { connectMongoDB } = require("./config/db");
 
@@ -22,18 +24,51 @@ const WebSocketController = require("./controllers/websocket/WebSocketController
 const app = express();
 const server = http.createServer(app);
 
-app.use(cors());
-app.use(express.json());
+// ─── Security Middleware ───────────────────────────────────────────────────────
+
+// Security headers
+app.use(helmet());
+
+// CORS — allow only frontend origin
+const allowedOrigins = [
+  process.env.FRONTEND_URL || "http://localhost:5173",
+  process.env.FRONTEND_URL_2,
+].filter(Boolean);
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true,
+}));
+
+// Global rate limiter
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: "Too many requests, please try again later." },
+});
+app.use(globalLimiter);
+
+// Auth endpoints rate limiter (stricter)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: "Too many login attempts, please try again later." },
+});
+
+app.use(express.json({ limit: "10kb" }));
 
 // ─── API Routes ───────────────────────────────────────────────────────────────
-app.use("/api/users", userRoutes);
+app.use("/api/users", authLimiter, userRoutes);
 app.use("/api/students", studentRoutes);
 app.use("/api/teachers", teacherRoutes);
 app.use("/api/admin", adminUserRoutes);
 app.use("/api/class-requests", classRequestRoutes);
 app.use("/api/schedule", scheduleRoutes);
 app.use("/api/newsfeed", newsfeedRoutes);
-app.use("/api/password-reset", passwordResetRoutes);
+app.use("/api/password-reset", authLimiter, passwordResetRoutes);
 app.use("/api/teacher-schedule", teacherScheduleRoutes);
 app.use("/api/teaching", teachingRegistrationRoutes);
 
