@@ -11,6 +11,7 @@ const {
   getClassRequests,
   updateClassRequestStatus,
   getRequestHistory,
+  updateSectionStatus,
 } = require("../controllers/adminUserController");
 const { auth, authorize } = require("../middleware/auth");
 const { validateAdminUserType } = require("../middleware/validateQuery");
@@ -159,6 +160,19 @@ router.get("/class-requests/:id/history", adminAuth, async (req, res) => {
     res.json(results);
   } catch (err) {
     res.status(500).json({ success: false, message: "Error fetching request history" });
+  }
+});
+
+// Open / close a course section (admin override for stale or imported data)
+router.put("/sections/:sectionId/status", adminAuth, async (req, res) => {
+  try {
+    const data = await updateSectionStatus(req.params.sectionId, req.body?.status);
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(err.status || 500).json({
+      success: false,
+      message: err.message || "Error updating section status",
+    });
   }
 });
 

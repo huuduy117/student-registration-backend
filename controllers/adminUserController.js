@@ -319,6 +319,38 @@ async function updateClassRequestStatus(requestId, status) {
   return true;
 }
 
+const SECTION_STATUSES = ["Active", "NotOpen", "Closed"];
+
+/**
+ * Admin override for the section lifecycle. The normal path is the class
+ * request workflow; this exists so a stale/imported section can be opened (or
+ * closed) without direct database access.
+ */
+async function updateSectionStatus(sectionId, status) {
+  if (!SECTION_STATUSES.includes(status)) {
+    const error = new Error(
+      `Invalid section status. Expected one of: ${SECTION_STATUSES.join(", ")}`,
+    );
+    error.status = 400;
+    throw error;
+  }
+
+  const { data, error } = await supabase
+    .from("course_sections")
+    .update({ status })
+    .eq("id", sectionId)
+    .select("id, status")
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) {
+    const notFound = new Error("Section not found");
+    notFound.status = 404;
+    throw notFound;
+  }
+  return data;
+}
+
 async function getRequestHistory(requestId) {
   const { data, error } = await supabase
     .from("request_history")
@@ -360,4 +392,5 @@ module.exports = {
   getClassRequests,
   updateClassRequestStatus,
   getRequestHistory,
+  updateSectionStatus,
 };
