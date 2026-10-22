@@ -1,31 +1,17 @@
 const { supabase } = require("../config/db");
+const {
+  buildWeeklySchedule,
+  getWeekEnd,
+  getWeekNumber,
+  getWeekStart,
+  mapScheduleItem,
+  toDateOnlyString,
+} = require("../utils/scheduleUtils");
 
-// ─── Helper ───────────────────────────────────────────────────────────────────
-
-const mapScheduleItem = (item) => {
-  const section = item.course_sections || {};
-  const course = section.courses || {};
-
-  return {
-    scheduleId: item.id,
-    classDate: item.class_date,
-    periodStart: item.period_start,
-    periodEnd: item.period_end,
-    room: item.room,
-    sessionType: item.session_type,
-    courseId: course.id,
-    courseName: course.name,
-    sectionId: section.id,
-    enrolledCount: section.enrolled_count,
-    tenMH: course.name || "",
-    maLopHP: section.id || "",
-    maMH: course.id || "",
-    tietBD: item.period_start != null ? String(item.period_start) : "",
-    tietKT: item.period_end != null ? String(item.period_end) : "",
-    phongHoc: item.room || "",
-    siSoHienTai: section.enrolled_count ?? 0,
-  };
-};
+const SCHEDULE_SELECT = `
+  id, class_date, period_start, period_end, room, session_type,
+  course_sections(id, enrolled_count, courses!course_sections_course_id_fkey(id, name))
+`;
 
 // ─── Get Teacher Schedule ─────────────────────────────────────────────────────
 
@@ -40,10 +26,7 @@ exports.getTeacherSchedule = async (req, res) => {
   try {
     let query = supabase
       .from("teacher_schedules")
-      .select(`
-        id, class_date, period_start, period_end, room, session_type,
-        course_sections(id, enrolled_count, courses!course_sections_course_id_fkey(id, name))
-      `)
+      .select(SCHEDULE_SELECT)
       .eq("teacher_id", teacherId);
 
     if (startDate && endDate) {
@@ -74,20 +57,19 @@ exports.getScheduleByWeek = async (req, res) => {
     return res.status(400).json({ message: "Missing teacher ID or week start date" });
   }
 
+  const start = getWeekStart(weekStart);
+  const end = getWeekEnd(weekStart);
+  if (!start || !end) {
+    return res.status(400).json({ message: "Invalid week start date" });
+  }
+
+  const formattedStart = toDateOnlyString(start);
+  const formattedEnd = toDateOnlyString(end);
+
   try {
-    const start = new Date(weekStart);
-    const end = new Date(start);
-    end.setDate(start.getDate() + 6);
-
-    const formattedStart = start.toISOString().split("T")[0];
-    const formattedEnd = end.toISOString().split("T")[0];
-
     const { data, error } = await supabase
       .from("teacher_schedules")
-      .select(`
-        id, class_date, period_start, period_end, room, session_type,
-        course_sections(id, enrolled_count, courses!course_sections_course_id_fkey(id, name))
-      `)
+      .select(SCHEDULE_SELECT)
       .eq("teacher_id", teacherId)
       .gte("class_date", formattedStart)
       .lte("class_date", formattedEnd)
@@ -96,26 +78,11 @@ exports.getScheduleByWeek = async (req, res) => {
 
     if (error) throw error;
 
-    const mapped = (data || []).map(mapScheduleItem);
-    const weeklySchedule = {
-      monday: [], tuesday: [], wednesday: [], thursday: [],
-      friday: [], saturday: [], sunday: [],
-    };
-
-    mapped.forEach((item) => {
-      const dow = new Date(item.classDate).getDay();
-      switch (dow) {
-        case 0: weeklySchedule.sunday.push(item); break;
-        case 1: weeklySchedule.monday.push(item); break;
-        case 2: weeklySchedule.tuesday.push(item); break;
-        case 3: weeklySchedule.wednesday.push(item); break;
-        case 4: weeklySchedule.thursday.push(item); break;
-        case 5: weeklySchedule.friday.push(item); break;
-        case 6: weeklySchedule.saturday.push(item); break;
-      }
+    res.json({
+      weekStart: formattedStart,
+      weekEnd: formattedEnd,
+      schedule: buildWeeklySchedule((data || []).map(mapScheduleItem)),
     });
-
-    res.json({ weekStart: formattedStart, weekEnd: formattedEnd, schedule: weeklySchedule });
   } catch (err) {
     console.error("Error fetching weekly schedule:", err?.message || err);
     res.status(500).json({
@@ -143,37 +110,25 @@ exports.getAvailableWeeks = async (req, res) => {
 
     if (error) throw error;
 
-    const weeksMap = {};
+    const weeksMap = new Map();
     (data || []).forEach((item) => {
-      if (!item.class_date) return;
-      const d = new Date(item.class_date);
-      const day = d.getDay();
-      const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-      const start = new Date(d);
-      start.setDate(diff);
-      start.setHours(0, 0, 0, 0);
-      const startStr = start.toISOString().split("T")[0];
+      const start = getWeekStart(item.class_date);
+      if (!start) return;
 
-      if (!weeksMap[startStr]) {
-        const end = new Date(start);
-        end.setDate(start.getDate() + 6);
-        const dateObj = new Date(start.getTime());
-        dateObj.setUTCDate(dateObj.getUTCDate() + 4 - (dateObj.getUTCDay() || 7));
-        const yearStart = new Date(Date.UTC(dateObj.getUTCFullYear(), 0, 1));
-        const weekNo = Math.ceil((((dateObj - yearStart) / 86400000) + 1) / 7);
-        const weekNumber = parseInt(`${dateObj.getUTCFullYear()}${weekNo.toString().padStart(2, "0")}`);
-        weeksMap[startStr] = {
-          weekNumber,
-          weekStart: startStr,
-          weekEnd: end.toISOString().split("T")[0],
-          _ts: start.getTime(),
-        };
-      }
+      const startStr = toDateOnlyString(start);
+      if (weeksMap.has(startStr)) return;
+
+      weeksMap.set(startStr, {
+        weekNumber: getWeekNumber(start),
+        weekStart: startStr,
+        weekEnd: toDateOnlyString(getWeekEnd(item.class_date)),
+        _ts: start.getTime(),
+      });
     });
 
-    const results = Object.values(weeksMap)
+    const results = [...weeksMap.values()]
       .sort((a, b) => a._ts - b._ts)
-      .map(({ _ts, ...w }) => w);
+      .map(({ _ts, ...week }) => week);
 
     res.json(results);
   } catch (err) {

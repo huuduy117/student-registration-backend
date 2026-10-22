@@ -1,5 +1,8 @@
 const { WebSocketServer } = require("ws")
 const express = require("express")
+const { auth, verifyToken } = require("../../middleware/auth")
+const { isTokenRevoked } = require("../../services/tokenService")
+const { canAccessRoom } = require("../../services/roomAccessService")
 
 class WebSocketController {
   constructor(mongoDB) {
@@ -10,9 +13,16 @@ class WebSocketController {
     this.rooms = new Map() // Track clients by room
   }
   setupRoutes() {
-    this.router.get("/history/:roomId", async (req, res) => {
+    this.router.get("/history/:roomId", auth, async (req, res) => {
       try {
         const { roomId } = req.params
+
+        // The handshake check is not enough for REST history: a signed-in
+        // student could otherwise read another class channel.
+        if (!(await canAccessRoom(req.user, roomId))) {
+          return res.status(403).json({ error: "You cannot access this room" })
+        }
+
         const messagesCollection = this.mongoDB.collection("messages")
 
         const messages = await messagesCollection
@@ -93,7 +103,14 @@ class WebSocketController {
       const pathname = url.pathname
       const roomId = pathname.split("/").pop()
 
-      console.log(`Client connected to room: ${roomId}`)
+      // `ws.user` is set by handleUpgrade after the JWT is verified. Without it
+      // the socket should never have been accepted.
+      if (!ws.user) {
+        ws.close(1008, "Unauthorized")
+        return
+      }
+
+      console.log(`Client ${ws.user.username} connected to room: ${roomId}`)
 
       // Add client to room
       if (!this.rooms.has(roomId)) {
@@ -113,9 +130,11 @@ class WebSocketController {
 
           const parsedMessage = JSON.parse(messageData)
           const messageObj = {
-            roomId: String(parsedMessage.roomId || ""),
-            text: String(parsedMessage.text || "").trim(),
-            sender: String(parsedMessage.sender || "unknown"),
+            // Ignore client-supplied roomId/sender: otherwise any authenticated
+            // user could post into another room or impersonate someone else.
+            roomId: String(ws.roomId),
+            text: String(parsedMessage.text || "").trim().slice(0, 2000),
+            sender: ws.user.username,
             timestamp: new Date(),
           }
 
@@ -164,15 +183,56 @@ class WebSocketController {
     })
   }
 
-  handleUpgrade(request, socket, head) {
-    const pathname = request.url
+  async handleUpgrade(request, socket, head) {
+    const url = new URL(request.url, `http://${request.headers.host}`)
 
-    if (pathname.startsWith("/chat/")) {
+    const reject = (status, reason) => {
+      socket.write(
+        `HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\n\r\n`,
+      )
+      socket.destroy()
+    }
+
+    if (!url.pathname.startsWith("/chat/")) {
+      socket.destroy()
+      return
+    }
+
+    let user
+    try {
+      // Browsers cannot set headers on WebSocket handshakes, so the token is
+      // passed as a query parameter (same token the REST API uses).
+      user = verifyToken(url.searchParams.get("token"))
+    } catch (error) {
+      reject(401, "Unauthorized")
+      return
+    }
+
+    try {
+      if (user.jti && (await isTokenRevoked(user.jti))) {
+        reject(401, "Unauthorized")
+        return
+      }
+
+      const roomId = decodeURIComponent(url.pathname.split("/").pop() || "")
+      if (!roomId) {
+        reject(400, "Bad Request")
+        return
+      }
+
+      // Only members of the matching class (or staff/teachers) may connect.
+      if (!(await canAccessRoom(user, roomId))) {
+        reject(403, "Forbidden")
+        return
+      }
+
       this.wss.handleUpgrade(request, socket, head, (ws) => {
+        ws.user = user
         this.wss.emit("connection", ws, request)
       })
-    } else {
-      socket.destroy()
+    } catch (error) {
+      console.error("Error during WebSocket upgrade:", error)
+      reject(500, "Internal Server Error")
     }
   }
 }

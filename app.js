@@ -20,6 +20,7 @@ const teachingRegistrationRoutes = require("./routes/teachingRegistrationRoutes"
 
 // ─── WebSocket ─────────────────────────────────────────────────────────────────
 const WebSocketController = require("./controllers/websocket/WebSocketController");
+const { getJwtSecret } = require("./middleware/auth");
 
 const app = express();
 const server = http.createServer(app);
@@ -29,25 +30,18 @@ const server = http.createServer(app);
 // Security headers — disable helmet for CORS preflight
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 
-// CORS — allow frontend origins (both dev and deployed)
-const allowedOrigins = [
-  process.env.FRONTEND_URL?.trim() || "http://localhost:5173",
-  process.env.FRONTEND_URL_2?.trim(),
-  "https://student-registration-backend-qbz3.onrender.com",
-].filter(Boolean);
+// ─── CORS ─────────────────────────────────────────────────────────────────────
+// Exact-origin allowlist. `startsWith` was unsafe ("http://localhost:5173.evil.com"
+// matched) and the catch-all `cb(null, true)` disabled the allowlist entirely.
+const { buildCorsConfig } = require("./utils/corsConfig");
 
-app.use(cors({
-  origin: (origin, cb) => {
-    // Allow requests with no origin (server-to-server, curl, etc.)
-    if (!origin) return cb(null, true);
-    if (allowedOrigins.some(o => origin.startsWith(o))) return cb(null, true);
-    return cb(null, true); // Allow all in development — tighten for production
-  },
-  credentials: true,
-}));
+const { options: corsOptions } = buildCorsConfig();
 
-// Handle OPTIONS preflight explicitly
-app.options("*", cors());
+app.use(cors(corsOptions));
+
+// Preflight must use the same options as normal requests (it used to fall back
+// to the permissive default `cors()`).
+app.options("*", cors(corsOptions));
 
 // Global rate limiter — skip OPTIONS (preflight)
 const globalLimiter = rateLimit({
@@ -66,7 +60,10 @@ const authLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => req.method === "OPTIONS",
+  // Login is the brute-force target; logout should not consume the same
+  // budget (a user can log in/out repeatedly without attacking anything).
+  skip: (req) =>
+    req.method === "OPTIONS" || req.path === "/logout",
   message: { success: false, message: "Too many login attempts, please try again later." },
 });
 
@@ -87,6 +84,9 @@ app.use("/api/teaching", teachingRegistrationRoutes);
 // ─── Start Server ─────────────────────────────────────────────────────────────
 async function startServer() {
   try {
+    // Fail fast: every authenticated request and every signed token needs this.
+    getJwtSecret();
+
     const mongoDB = await connectMongoDB();
 
     // Initialize WebSocket controller
@@ -94,9 +94,16 @@ async function startServer() {
     const chatRouter = await wsController.initialize();
     app.use("/api/chat", chatRouter);
 
-    // Handle WebSocket upgrade requests
+    // Handle WebSocket upgrade requests. handleUpgrade is async (JWT
+    // revocation + room ACL hit the database), so a rejected promise must be
+    // caught or it becomes an unhandled rejection.
     server.on("upgrade", (request, socket, head) => {
-      wsController.handleUpgrade(request, socket, head);
+      Promise.resolve(wsController.handleUpgrade(request, socket, head)).catch(
+        (error) => {
+          console.error("WebSocket upgrade failed:", error);
+          socket.destroy();
+        },
+      );
     });
 
     const port = process.env.PORT || 5000;

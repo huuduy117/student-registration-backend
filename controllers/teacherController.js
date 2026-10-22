@@ -1,17 +1,10 @@
 const { supabase } = require("../config/db");
 const { sendSuccess, sendError } = require("../utils/response");
+const { schedulesConflict } = require("../services/enrollmentService");
 
 const generateId = (prefix) => `${prefix}_${Date.now()}`;
 
 // ─── UTILITIES ──────────────────────────────────────────────────────────────
-
-const checkScheduleConflict = (sched1, sched2) => {
-  if (sched1.class_date !== sched2.class_date) return false;
-  if (sched1.period_end < sched2.period_start || sched1.period_start > sched2.period_end) {
-    return false;
-  }
-  return true;
-};
 
 // ─── WORKFLOW 2: TEACHER REGISTRATION & ASSIGNMENT ─────────────────────────
 
@@ -49,7 +42,7 @@ exports.registerTeaching = async (req, res) => {
           for (let existing of existingSchedules) {
             // Ignore if it's the exact same record
             if (target.id === existing.id) continue;
-            if (checkScheduleConflict(target, existing)) {
+            if (schedulesConflict(target, existing)) {
               return sendError(res, 400, "SCHEDULE_CONFLICT", "Schedule conflict detected");
             }
           }

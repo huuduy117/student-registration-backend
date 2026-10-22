@@ -14,7 +14,6 @@ module.exports = {
 
   // Test paths and patterns
   testMatch: [
-    '**/test/**/*.test.js',
     '**/tests/**/*.test.js',
     '**/__tests__/**/*.test.js',
   ],
@@ -54,8 +53,8 @@ module.exports = {
     },
   },
 
-  // Setup files
-  setupFilesAfterEnv: ['<rootDir>/test/setup.js'],
+  // Setup files (environment only — runs before the test framework)
+  setupFiles: ['<rootDir>/tests/setupEnv.js'],
 
   // Timeout for tests (some tests may need extra time)
   testTimeout: 30000,

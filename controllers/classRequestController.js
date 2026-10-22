@@ -1,5 +1,6 @@
 const { supabase } = require("../config/db");
 const { sendSuccess, sendError } = require("../utils/response");
+const { EnrollmentError, enrollStudent } = require("../services/enrollmentService");
 
 // ─── UTILS ──────────────────────────────────────────────────────────────────
 
@@ -36,20 +37,27 @@ exports.getAllClassRequests = async (req, res) => {
 
 exports.getAvailableCourses = async (req, res) => {
   try {
-    const { data, error } = await supabase
-      .from("course_sections")
-      .select(`
-        id, academic_year, semester, capacity, enrolled_count,
-        courses!course_sections_course_id_fkey(id, name, credits)
-      `)
-      .order("id", { ascending: true });
+    // A class request exists to OPEN a new section, so only courses without an
+    // Active section are relevant. Returning open sections here was the wrong
+    // direction: the student could never request a course that has no class yet.
+    const [coursesResult, activeSectionsResult] = await Promise.all([
+      supabase.from("courses").select("id, name, credits").order("name", { ascending: true }),
+      supabase.from("course_sections").select("course_id").eq("status", "Active"),
+    ]);
 
-    if (error) throw error;
-    
-    const availableCourses = (data || []).filter(section => section.enrolled_count < section.capacity);
+    if (coursesResult.error) throw coursesResult.error;
+    if (activeSectionsResult.error) throw activeSectionsResult.error;
+
+    const activeCourseIds = new Set(
+      (activeSectionsResult.data || []).map((section) => section.course_id),
+    );
+    const availableCourses = (coursesResult.data || []).filter(
+      (course) => !activeCourseIds.has(course.id),
+    );
+
     return sendSuccess(res, "get_available_courses", availableCourses);
   } catch (err) {
-    console.error(err);
+    console.error("[getAvailableCourses]", err);
     return sendError(res, 500, "INTERNAL_ERROR", "Error fetching available courses");
   }
 };
@@ -372,73 +380,27 @@ exports.openCourseSection = async (req, res) => {
   }
 };
 
-// ─── JOIN CLASS REQUEST (Frontend Compatibility) ───────────────────────────
-// The prompt doesn't specify joining a request, but the UI needs it. We will just add a student to student_courses and increment participant_count.
+// ─── JOIN CLASS REQUEST (deprecated alias) ──────────────────────────────────
+// Kept for older frontend builds. New clients call POST /api/students/enroll.
+// Both delegate to the shared enrollment service (capacity, prerequisite,
+// timetable, and all four writes).
 exports.joinClassRequest = async (req, res) => {
   const { sectionId } = req.body;
   const studentId = req.user.userId;
 
   try {
-    if (!sectionId) {
-      return sendError(res, 400, "INVALID_INPUT", "sectionId is required");
+    const result = await enrollStudent({ studentId, sectionId });
+    return sendSuccess(res, "join_class_request", result, [
+      "student_courses",
+      "class_enrollments",
+      "course_sections",
+      "student_schedules",
+    ]);
+  } catch (error) {
+    if (error instanceof EnrollmentError) {
+      return sendError(res, error.status, error.code, error.message);
     }
-
-    const { data: user } = await supabase.from("users").select("role").eq("id", studentId).single();
-    if (!user || user.role !== "Student") {
-      return sendError(res, 403, "UNAUTHORIZED", "Only students can join class requests");
-    }
-
-    const { data: existing } = await supabase
-      .from("student_courses")
-      .select("student_id")
-      .eq("student_id", studentId)
-      .eq("section_id", sectionId)
-      .maybeSingle();
-    if (existing) {
-      return sendError(res, 400, "DUPLICATE_ENROLLMENT", "Student already registered for this section");
-    }
-
-    const { data: section, error: secErr } = await supabase
-      .from("course_sections")
-      .select("course_id")
-      .eq("id", sectionId)
-      .single();
-    if (secErr || !section) {
-      return sendError(res, 404, "NOT_FOUND", "Class section not found");
-    }
-
-    const { error: insErr } = await supabase.from("student_courses").insert({
-      student_id: studentId,
-      course_id: section.course_id,
-      section_id: sectionId,
-      registered_at: new Date().toISOString().split("T")[0],
-    });
-    if (insErr) {
-      console.error("[joinClassRequest] insert student_courses:", insErr);
-      return sendError(res, 400, "INSERT_FAILED", insErr.message || "Could not enroll in section", {
-        code: insErr.code,
-      });
-    }
-
-    const { data: classReqRows, error: crErr } = await supabase
-      .from("class_requests")
-      .select("id, participant_count")
-      .eq("section_id", sectionId)
-      .limit(1);
-    if (crErr) {
-      console.error("[joinClassRequest] class_requests lookup:", crErr);
-    }
-    const classReq = classReqRows?.[0];
-    if (classReq) {
-      await supabase
-        .from("class_requests")
-        .update({ participant_count: (classReq.participant_count || 0) + 1 })
-        .eq("id", classReq.id);
-    }
-
-    return sendSuccess(res, "join_class_request", null, ["student_courses", "class_requests"]);
-  } catch (err) {
-    console.error("[joinClassRequest]", err);
-    return sendError(res, 500, "INTERNAL_ERROR", err?.message || "Error joining class request");
+    console.error("[joinClassRequest]", error);
+    return sendError(res, 500, "INTERNAL_ERROR", "Error joining class request");
   }
 };
