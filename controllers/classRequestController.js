@@ -15,7 +15,7 @@ exports.getAllClassRequests = async (req, res) => {
         id, submitted_at, overall_status, process_status, student_id, participant_count, description, teacher_id,
         students(id, full_name, classes(name)),
         courses!class_requests_course_id_fkey(id, name),
-        course_sections(id, academic_year, semester, capacity, enrolled_count, courses!course_sections_course_id_fkey(id, name)),
+        course_sections(id, academic_year, semester, capacity, enrolled_count, status, courses!course_sections_course_id_fkey(id, name)),
         teachers(id, full_name)
       `;
   try {
