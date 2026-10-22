@@ -13,7 +13,7 @@ describe("CORS allowlist", () => {
     expect(prod.configuredOrigins).toEqual([
       "https://app.example.com",
       "https://admin.example.com",
-      "https://student-registration-backend-qbz3.onrender.com",
+      "https://student-registration-frontend-delta.vercel.app",
     ]);
   });
 
@@ -21,6 +21,9 @@ describe("CORS allowlist", () => {
     expect(prod.isAllowedOrigin("https://app.example.com")).toBe(true);
     expect(prod.isAllowedOrigin("https://app.example.com/")).toBe(true);
     expect(prod.isAllowedOrigin("https://admin.example.com")).toBe(true);
+    expect(
+      prod.isAllowedOrigin("https://student-registration-frontend-delta.vercel.app"),
+    ).toBe(true);
   });
 
   it("rejects look-alike origins that `startsWith` used to accept", () => {

@@ -5,7 +5,13 @@
 
 const normalizeOrigin = (value) => (value || "").trim().replace(/\/+$/, "");
 
-const DEFAULT_DEPLOYED_ORIGIN = "https://student-registration-backend-qbz3.onrender.com";
+// Fallback for the known production frontend. `FRONTEND_URL` (and
+// `FRONTEND_URL_2`) should still be set on the host; this default keeps CORS
+// working when the env var is missing, which is what produced the
+// "Redirect is not allowed for a preflight request" failure in production.
+const DEFAULT_DEPLOYED_ORIGINS = [
+  "https://student-registration-frontend-delta.vercel.app",
+];
 
 const buildCorsConfig = ({
   env = process.env,
@@ -14,7 +20,7 @@ const buildCorsConfig = ({
   const configuredOrigins = [
     env.FRONTEND_URL,
     env.FRONTEND_URL_2,
-    DEFAULT_DEPLOYED_ORIGIN,
+    ...DEFAULT_DEPLOYED_ORIGINS,
   ]
     .filter(Boolean)
     .map(normalizeOrigin);
@@ -50,4 +56,4 @@ const buildCorsConfig = ({
   return { configuredOrigins, isAllowedOrigin, options };
 };
 
-module.exports = { buildCorsConfig, DEFAULT_DEPLOYED_ORIGIN };
+module.exports = { buildCorsConfig, DEFAULT_DEPLOYED_ORIGINS };
