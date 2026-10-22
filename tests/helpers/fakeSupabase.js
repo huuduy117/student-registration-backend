@@ -14,6 +14,7 @@
 const createFakeSupabase = () => {
   const state = {};
   const failInsert = {};
+  const selectLog = [];
   let rpcImpl = async () => ({
     data: null,
     error: {
@@ -36,7 +37,10 @@ const createFakeSupabase = () => {
     }
 
     select(_cols, opts = {}) {
-      if (this.op === "select") this.countMode = Boolean(opts.count);
+      if (this.op === "select") {
+        this.countMode = Boolean(opts.count);
+        selectLog.push({ table: this.table, columns: _cols });
+      }
       return this;
     }
 
@@ -169,6 +173,7 @@ const createFakeSupabase = () => {
   return {
     state,
     failInsert,
+    selectLog,
     supabase: {
       from: (table) => new Query(table),
       rpc: (fn, args) => Promise.resolve(rpcImpl(fn, args)),
@@ -179,6 +184,7 @@ const createFakeSupabase = () => {
     reset() {
       for (const key of Object.keys(state)) delete state[key];
       for (const key of Object.keys(failInsert)) delete failInsert[key];
+      selectLog.length = 0;
       rpcImpl = async () => ({
         data: null,
         error: {

@@ -100,6 +100,21 @@ describe("schedulesConflict", () => {
 });
 
 describe("enrollStudent", () => {
+  it("uses the explicit course_sections -> courses relationship", async () => {
+    const { enrollStudent } = loadService();
+
+    await enrollStudent({ studentId: "ST1", sectionId: "SEC1" });
+
+    const sectionSelect = fake.selectLog.find(
+      (entry) => entry.table === "course_sections",
+    );
+    // `courses(prerequisite)` made PostgREST fail in production (500 even for
+    // a missing section); every other query in the codebase uses this hint.
+    expect(sectionSelect.columns).toContain(
+      "courses!course_sections_course_id_fkey(prerequisite)",
+    );
+  });
+
   it("writes all four tables without touching the expected headcount", async () => {
     const { enrollStudent } = loadService();
 

@@ -51,6 +51,54 @@ const schedulesConflict = (a, b) => {
 const isActiveOrPassed = (row) =>
   row.grade === null || row.grade === undefined || Number(row.grade) >= 5;
 
+const describeError = (error) => ({
+  code: error?.code ?? null,
+  message: error?.message ?? String(error),
+  details: error?.details ?? null,
+  hint: error?.hint ?? null,
+});
+
+/**
+ * Turn an unexpected Supabase/PostgREST failure into a generic 500 without
+ * losing the original error. The controller logs `cause`/`stage`, which is
+ * what makes production failures diagnosable without leaking SQL details to
+ * clients.
+ */
+const lookupFailure = (stage, error) => {
+  console.error(`[enrollment] lookup failed (${stage})`, describeError(error));
+  const wrapped = new EnrollmentError(
+    "ENROLLMENT_FAILED",
+    "Enrollment failed, please retry",
+    500,
+  );
+  wrapped.cause = error;
+  wrapped.stage = stage;
+  return wrapped;
+};
+
+const writeFailure = (stage, error) => {
+  // 23505 = unique_violation. The pre-checks should catch this, but a
+  // concurrent request can still lose the race.
+  if (error?.code === "23505") {
+    console.warn(`[enrollment] duplicate write detected (${stage})`, describeError(error));
+    return new EnrollmentError(
+      "DUPLICATE_ENROLLMENT",
+      "Already enrolled or passed this course",
+      409,
+    );
+  }
+
+  console.error(`[enrollment] write failed (${stage})`, describeError(error));
+  const wrapped = new EnrollmentError(
+    "ENROLLMENT_FAILED",
+    "Enrollment failed, please retry",
+    500,
+  );
+  wrapped.cause = error;
+  wrapped.stage = stage;
+  return wrapped;
+};
+
 const RPC_ERRORS = {
   SECTION_NOT_FOUND: { status: 404, message: "Section not found" },
   STUDENT_NOT_FOUND: { status: 404, message: "Student not found" },
@@ -108,7 +156,17 @@ const tryEnrollWithRpc = async (studentId, sectionId) => {
     return { handled: false };
   }
 
-  const { data, error } = response;
+  const { data, error } = response || {};
+
+  if (!response || typeof response !== "object") {
+    if (!warnedRpcUnavailable) {
+      warnedRpcUnavailable = true;
+      console.warn(
+        `[enrollment] ${ENROLL_RPC} returned no response, using compensated writes`,
+      );
+    }
+    return { handled: false };
+  }
 
   if (!error) {
     return { handled: true, result: normaliseRpcResult(data, sectionId) };
@@ -145,13 +203,17 @@ const tryEnrollWithRpc = async (studentId, sectionId) => {
  */
 const enrollWithCompensatedWrites = async ({ studentId, sectionId }) => {
   // ── 1. Section must exist, be open and have a free seat ──────────────────
+  // Use the explicit relationship name everywhere: PostgREST cannot infer
+  // `courses(...)` reliably (it failed in production with a 500 even for a
+  // missing section), while `courses!course_sections_course_id_fkey` is the
+  // spelling used by every other query in this codebase.
   const { data: section, error: sectionError } = await supabase
     .from("course_sections")
-    .select("*, courses(prerequisite)")
+    .select("*, courses!course_sections_course_id_fkey(prerequisite)")
     .eq("id", sectionId)
     .maybeSingle();
 
-  if (sectionError) throw sectionError;
+  if (sectionError) throw lookupFailure("course_sections", sectionError);
   if (!section) throw new EnrollmentError("SECTION_NOT_FOUND", "Section not found", 404);
   if (section.status !== ACTIVE) {
     throw new EnrollmentError("SECTION_NOT_ACTIVE", "Section is not Active");
@@ -164,36 +226,43 @@ const enrollWithCompensatedWrites = async ({ studentId, sectionId }) => {
   }
 
   // ── 2. Student must be enrolled ──────────────────────────────────────────
-  const { data: student } = await supabase
+  const { data: student, error: studentError } = await supabase
     .from("students")
     .select("status")
     .eq("id", studentId)
     .maybeSingle();
 
+  if (studentError) throw lookupFailure("students", studentError);
   if (!student) throw new EnrollmentError("STUDENT_NOT_FOUND", "Student not found", 404);
   if (student.status !== "Enrolled") {
     throw new EnrollmentError("STUDENT_NOT_ENROLLED", "Student is not enrolled");
   }
 
   // ── 3. Not already in this section ───────────────────────────────────────
-  const { data: existingSection } = await supabase
+  const { data: existingSection, error: existingSectionError } = await supabase
     .from("class_enrollments")
     .select("status")
     .eq("student_id", studentId)
     .eq("section_id", sectionId)
     .maybeSingle();
 
+  if (existingSectionError) {
+    throw lookupFailure("class_enrollments", existingSectionError);
+  }
   if (existingSection) {
     throw new EnrollmentError("DUPLICATE_ENROLLMENT", "Already enrolled in this section");
   }
 
   // ── 4. Not already taking (or having passed) the course ──────────────────
-  const { data: existingCourse } = await supabase
+  const { data: existingCourse, error: existingCourseError } = await supabase
     .from("student_courses")
     .select("grade")
     .eq("student_id", studentId)
     .eq("course_id", section.course_id);
 
+  if (existingCourseError) {
+    throw lookupFailure("student_courses", existingCourseError);
+  }
   if ((existingCourse || []).some(isActiveOrPassed)) {
     throw new EnrollmentError("DUPLICATE_ENROLLMENT", "Already enrolled or passed this course");
   }
@@ -201,11 +270,15 @@ const enrollWithCompensatedWrites = async ({ studentId, sectionId }) => {
   // ── 5. Prerequisite must be passed ───────────────────────────────────────
   const prerequisite = section.courses?.prerequisite;
   if (prerequisite) {
-    const { data: prerequisiteRows } = await supabase
+    const { data: prerequisiteRows, error: prerequisiteError } = await supabase
       .from("student_courses")
       .select("grade")
       .eq("student_id", studentId)
       .eq("course_id", prerequisite);
+
+    if (prerequisiteError) {
+      throw lookupFailure("student_courses.prerequisite", prerequisiteError);
+    }
 
     const passed = (prerequisiteRows || []).some(
       (row) => row.grade !== null && Number(row.grade) >= 5,
@@ -214,16 +287,24 @@ const enrollWithCompensatedWrites = async ({ studentId, sectionId }) => {
   }
 
   // ── 6. No overlap with the student's existing timetable ──────────────────
-  const { data: teacherSchedules } = await supabase
+  const { data: teacherSchedules, error: teacherSchedulesError } = await supabase
     .from("teacher_schedules")
     .select("class_date, period_start, period_end, room, session_type")
     .eq("section_id", sectionId);
 
+  if (teacherSchedulesError) {
+    throw lookupFailure("teacher_schedules", teacherSchedulesError);
+  }
+
   if (teacherSchedules && teacherSchedules.length > 0) {
-    const { data: studentSchedules } = await supabase
+    const { data: studentSchedules, error: studentSchedulesError } = await supabase
       .from("student_schedules")
       .select("class_date, period_start, period_end")
       .eq("student_id", studentId);
+
+    if (studentSchedulesError) {
+      throw lookupFailure("student_schedules", studentSchedulesError);
+    }
 
     const hasConflict = (studentSchedules || []).some((existing) =>
       teacherSchedules.some((incoming) => schedulesConflict(incoming, existing)),
@@ -333,7 +414,7 @@ const enrollWithCompensatedWrites = async ({ studentId, sectionId }) => {
     );
 
     if (error instanceof EnrollmentError) throw error;
-    throw new EnrollmentError("ENROLLMENT_FAILED", "Enrollment failed, please retry", 500);
+    throw writeFailure("writes", error);
   }
 };
 
