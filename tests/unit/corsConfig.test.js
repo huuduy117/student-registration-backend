@@ -26,6 +26,35 @@ describe("CORS allowlist", () => {
     ).toBe(true);
   });
 
+  it("allows this project's per-deployment Vercel URLs", () => {
+    expect(
+      prod.isAllowedOrigin(
+        "https://student-registration-frontend-7vzi-owdp6zcuc.vercel.app",
+      ),
+    ).toBe(true);
+    expect(
+      prod.isAllowedOrigin(
+        "https://student-registration-frontend-git-main-huuduy117.vercel.app",
+      ),
+    ).toBe(true);
+    expect(prod.isAllowedOrigin("https://student-registration-frontend.vercel.app")).toBe(
+      true,
+    );
+  });
+
+  it("rejects other Vercel apps and look-alike deployment domains", () => {
+    expect(prod.isAllowedOrigin("https://other-app-abc123.vercel.app")).toBe(false);
+    expect(
+      prod.isAllowedOrigin("https://student-registration-frontend-delta.vercel.app.evil.com"),
+    ).toBe(false);
+    expect(
+      prod.isAllowedOrigin("https://evil-student-registration-frontend-delta.vercel.app"),
+    ).toBe(false);
+    expect(
+      prod.isAllowedOrigin("http://student-registration-frontend-delta.vercel.app"),
+    ).toBe(false);
+  });
+
   it("rejects look-alike origins that `startsWith` used to accept", () => {
     expect(prod.isAllowedOrigin("https://app.example.com.evil.com")).toBe(false);
     expect(prod.isAllowedOrigin("https://app.example.com@evil.com")).toBe(false);

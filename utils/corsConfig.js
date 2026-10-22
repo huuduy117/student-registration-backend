@@ -13,6 +13,18 @@ const DEFAULT_DEPLOYED_ORIGINS = [
   "https://student-registration-frontend-delta.vercel.app",
 ];
 
+// Vercel gives every deployment its own URL
+// (`student-registration-frontend-<hash>-<team>.vercel.app`). The stable
+// alias is not always what users open, so allow this project's deployment
+// URLs without hard-coding each hash. The pattern is anchored to the project
+// prefix so unrelated `*.vercel.app` apps are still rejected.
+const DEPLOYED_ORIGIN_PATTERNS = [
+  /^https:\/\/student-registration-frontend(?:-[a-z0-9]+)*\.vercel\.app$/i,
+];
+
+const isDeployedFrontendOrigin = (origin) =>
+  DEPLOYED_ORIGIN_PATTERNS.some((pattern) => pattern.test(origin));
+
 const buildCorsConfig = ({
   env = process.env,
   nodeEnv = process.env.NODE_ENV,
@@ -34,7 +46,11 @@ const buildCorsConfig = ({
   const isAllowedOrigin = (origin) => {
     if (!origin) return false;
     const normalized = normalizeOrigin(origin);
-    return configuredOrigins.includes(normalized) || isLocalDevOrigin(normalized);
+    return (
+      configuredOrigins.includes(normalized) ||
+      isDeployedFrontendOrigin(normalized) ||
+      isLocalDevOrigin(normalized)
+    );
   };
 
   const options = {
