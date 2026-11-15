@@ -3,6 +3,7 @@ const express = require("express")
 const { auth, verifyToken } = require("../../middleware/auth")
 const { isTokenRevoked } = require("../../services/tokenService")
 const { canAccessRoom } = require("../../services/roomAccessService")
+const { supabase } = require("../../config/db")
 
 class WebSocketController {
   constructor(mongoDB) {
@@ -40,6 +41,43 @@ class WebSocketController {
       } catch (error) {
         console.error("Error fetching chat history:", error)
         res.status(500).json({ error: "Failed to fetch chat history" })
+      }
+    })
+
+    // List chat rooms the current user is allowed to join.
+    // Staff/teachers see every configured room; students see only their own class.
+    this.router.get("/rooms", auth, async (req, res) => {
+      try {
+        const { user } = req
+        const { data: roomsData, error } = await supabase
+          .from("course_sections")
+          .select("id, status")
+          .eq("status", "Active")
+
+        if (error) throw error
+
+        const allRooms = (roomsData || [])
+          .map((s) => s.id)
+          .filter(Boolean)
+
+        let allowed = allRooms
+
+        if (user.userRole === "Student" && user.userId) {
+          const { data: student, error: studentErr } = await supabase
+            .from("students")
+            .select("classes(name)")
+            .eq("id", user.userId)
+            .maybeSingle()
+
+          if (studentErr) throw studentErr
+          const className = student?.classes?.name
+          allowed = className ? allRooms.filter((r) => r === className) : []
+        }
+
+        res.json(allowed)
+      } catch (error) {
+        console.error("Error fetching chat rooms:", error)
+        res.status(500).json({ error: "Failed to fetch chat rooms" })
       }
     })
   }
